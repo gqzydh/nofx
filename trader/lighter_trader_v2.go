@@ -2,12 +2,11 @@ package trader
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
-	"nofx/logger"
 	"net/http"
+	"nofx/logger"
 	"strings"
 	"sync"
 	"time"
@@ -15,21 +14,50 @@ import (
 	lighterClient "github.com/elliottech/lighter-go/client"
 	lighterHTTP "github.com/elliottech/lighter-go/client/http"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // AccountInfo LIGHTER account information
 type AccountInfo struct {
-	AccountIndex int64  `json:"account_index"`
-	L1Address    string `json:"l1_address"`
-	// Other fields can be added based on actual API response
+	AccountIndex     int64   `json:"account_index"`
+	Index            int64   `json:"index"` // Same as account_index
+	L1Address        string  `json:"l1_address"`
+	AvailableBalance string  `json:"available_balance"`
+	Collateral       string  `json:"collateral"`
+	CrossAssetValue  string  `json:"cross_asset_value"`
+	TotalEquity      string  `json:"total_equity"`
+	UnrealizedPnl    string  `json:"unrealized_pnl"`
+	Positions        []LighterPositionInfo `json:"positions"`
+}
+
+// LighterPositionInfo Position info from Lighter account API
+type LighterPositionInfo struct {
+	MarketID              int     `json:"market_id"`
+	Symbol                string  `json:"symbol"`
+	Sign                  int     `json:"sign"`                    // 1 = long, -1 = short
+	Position              string  `json:"position"`                // Position size
+	AvgEntryPrice         string  `json:"avg_entry_price"`         // Entry price
+	PositionValue         string  `json:"position_value"`          // Position value in USD
+	LiquidationPrice      string  `json:"liquidation_price"`
+	UnrealizedPnl         string  `json:"unrealized_pnl"`
+	RealizedPnl           string  `json:"realized_pnl"`
+	InitialMarginFraction string  `json:"initial_margin_fraction"` // e.g. "5.00" means 5% = 20x leverage
+	AllocatedMargin       string  `json:"allocated_margin"`
+	MarginMode            int     `json:"margin_mode"`             // 0 = cross, 1 = isolated
+}
+
+// AccountResponse LIGHTER account API response
+// API may return accounts in "accounts" or "sub_accounts" field
+type AccountResponse struct {
+	Code        int           `json:"code"`
+	Message     string        `json:"message"`
+	Accounts    []AccountInfo `json:"accounts"`
+	SubAccounts []AccountInfo `json:"sub_accounts"` // Sub-accounts field
 }
 
 // LighterTraderV2 New implementation using official lighter-go SDK
 type LighterTraderV2 struct {
 	ctx        context.Context
-	privateKey *ecdsa.PrivateKey // L1 wallet private key (for account identification)
-	walletAddr string            // Ethereum wallet address
+	walletAddr string // Ethereum wallet address
 
 	client  *http.Client
 	baseURL string
@@ -55,36 +83,38 @@ type LighterTraderV2 struct {
 	precisionMutex  sync.RWMutex
 
 	// Market index cache
-	marketIndexMap map[string]uint8 // symbol -> market_id
+	marketIndexMap map[string]uint16 // symbol -> market_id
 	marketMutex    sync.RWMutex
 }
 
 // NewLighterTraderV2 Create new LIGHTER trader (using official SDK)
 // Parameters:
-//   - l1PrivateKeyHex: L1 wallet private key (32 bytes, standard Ethereum private key)
-//   - walletAddr: Ethereum wallet address (optional, will be derived from private key if empty)
-//   - apiKeyPrivateKeyHex: API Key private key (40 bytes, for signing transactions) - needs generation if empty
+//   - walletAddr: Ethereum wallet address (required)
+//   - apiKeyPrivateKeyHex: API Key private key (40 bytes, for signing transactions)
+//   - apiKeyIndex: API Key index (0-255)
 //   - testnet: Whether to use testnet
-func NewLighterTraderV2(l1PrivateKeyHex, walletAddr, apiKeyPrivateKeyHex string, testnet bool) (*LighterTraderV2, error) {
-	// 1. Parse L1 private key
-	l1PrivateKeyHex = strings.TrimPrefix(strings.ToLower(l1PrivateKeyHex), "0x")
-	l1PrivateKey, err := crypto.HexToECDSA(l1PrivateKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid L1 private key: %w", err)
+func NewLighterTraderV2(walletAddr, apiKeyPrivateKeyHex string, apiKeyIndex int, testnet bool) (*LighterTraderV2, error) {
+	// 1. Validate wallet address
+	if walletAddr == "" {
+		return nil, fmt.Errorf("wallet address is required")
 	}
 
-	// 2. If wallet address not provided, derive from private key
-	if walletAddr == "" {
-		walletAddr = crypto.PubkeyToAddress(*l1PrivateKey.Public().(*ecdsa.PublicKey)).Hex()
-		logger.Infof("✓ Derived wallet address from private key: %s", walletAddr)
+	// Convert to checksum address (Lighter API is case-sensitive)
+	walletAddr = ToChecksumAddress(walletAddr)
+	logger.Infof("Using checksum address: %s", walletAddr)
+
+	// 2. Validate API Key
+	if apiKeyPrivateKeyHex == "" {
+		return nil, fmt.Errorf("API Key private key is required")
 	}
 
 	// 3. Determine API URL and Chain ID
+	// Note: Python SDK uses 304 for mainnet, 300 for testnet (not the L1 chain IDs)
 	baseURL := "https://mainnet.zklighter.elliot.ai"
-	chainID := uint32(42766) // Mainnet Chain ID
+	chainID := uint32(304) // Mainnet Lighter Chain ID (from Python SDK)
 	if testnet {
 		baseURL = "https://testnet.zklighter.elliot.ai"
-		chainID = uint32(42069) // Testnet Chain ID
+		chainID = uint32(300) // Testnet Lighter Chain ID (from Python SDK)
 	}
 
 	// 4. Create HTTP client
@@ -92,7 +122,6 @@ func NewLighterTraderV2(l1PrivateKeyHex, walletAddr, apiKeyPrivateKeyHex string,
 
 	trader := &LighterTraderV2{
 		ctx:              context.Background(),
-		privateKey:       l1PrivateKey,
 		walletAddr:       walletAddr,
 		client:           &http.Client{Timeout: 30 * time.Second},
 		baseURL:          baseURL,
@@ -100,9 +129,9 @@ func NewLighterTraderV2(l1PrivateKeyHex, walletAddr, apiKeyPrivateKeyHex string,
 		chainID:          chainID,
 		httpClient:       httpClient,
 		apiKeyPrivateKey: apiKeyPrivateKeyHex,
-		apiKeyIndex:      0, // Default to index 0
+		apiKeyIndex:      uint8(apiKeyIndex),
 		symbolPrecision:  make(map[string]SymbolPrecision),
-		marketIndexMap:   make(map[string]uint8),
+		marketIndexMap:   make(map[string]uint16),
 	}
 
 	// 5. Initialize account (get account index)
@@ -110,14 +139,7 @@ func NewLighterTraderV2(l1PrivateKeyHex, walletAddr, apiKeyPrivateKeyHex string,
 		return nil, fmt.Errorf("failed to initialize account: %w", err)
 	}
 
-	// 6. If no API Key, prompt user to generate one
-	if apiKeyPrivateKeyHex == "" {
-		logger.Infof("⚠️  No API Key private key provided, please call GenerateAndRegisterAPIKey() to generate")
-		logger.Infof("   Or get an existing API Key from LIGHTER website")
-		return trader, nil
-	}
-
-	// 7. Create TxClient (for signing transactions)
+	// 6. Create TxClient (for signing transactions)
 	txClient, err := lighterClient.NewTxClient(
 		httpClient,
 		apiKeyPrivateKeyHex,
@@ -131,11 +153,10 @@ func NewLighterTraderV2(l1PrivateKeyHex, walletAddr, apiKeyPrivateKeyHex string,
 
 	trader.txClient = txClient
 
-	// 8. Verify API Key is correct
+	// 7. Verify API Key is correct
 	if err := trader.checkClient(); err != nil {
-		logger.Infof("⚠️  API Key verification failed: %v", err)
-		logger.Infof("   You may need to regenerate API Key or check configuration")
-		return trader, err
+		logger.Warnf("⚠️  API Key verification failed: %v", err)
+		// Don't fail here, allow trader to continue (may work with some operations)
 	}
 
 	logger.Infof("✓ LIGHTER trader initialized successfully (account=%d, apiKey=%d, testnet=%v)",
@@ -161,8 +182,9 @@ func (t *LighterTraderV2) initializeAccount() error {
 }
 
 // getAccountByL1Address Get LIGHTER account info by L1 wallet address
+// Supports both main accounts and sub-accounts
 func (t *LighterTraderV2) getAccountByL1Address() (*AccountInfo, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/account?by=address&value=%s", t.baseURL, t.walletAddr)
+	endpoint := fmt.Sprintf("%s/api/v1/account?by=l1_address&value=%s", t.baseURL, t.walletAddr)
 
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
@@ -180,16 +202,46 @@ func (t *LighterTraderV2) getAccountByL1Address() (*AccountInfo, error) {
 		return nil, err
 	}
 
+	// Log raw response for debugging
+	logger.Infof("LIGHTER account API response: %s", string(body))
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get account (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var accountInfo AccountInfo
-	if err := json.Unmarshal(body, &accountInfo); err != nil {
+	// Parse response - Lighter may return accounts in "accounts" or "sub_accounts"
+	var accountResp AccountResponse
+	if err := json.Unmarshal(body, &accountResp); err != nil {
 		return nil, fmt.Errorf("failed to parse account response: %w", err)
 	}
 
-	return &accountInfo, nil
+	// Check for API error
+	if accountResp.Code != 0 && accountResp.Code != 200 {
+		return nil, fmt.Errorf("Lighter API error (code %d): %s", accountResp.Code, accountResp.Message)
+	}
+
+	// Try accounts first, then sub_accounts
+	var allAccounts []AccountInfo
+	allAccounts = append(allAccounts, accountResp.Accounts...)
+	allAccounts = append(allAccounts, accountResp.SubAccounts...)
+
+	if len(allAccounts) == 0 {
+		return nil, fmt.Errorf("no account found for wallet address: %s (try depositing funds first at app.lighter.xyz)", t.walletAddr)
+	}
+
+	// Log all found accounts
+	logger.Infof("Found %d accounts (main: %d, sub: %d)", len(allAccounts), len(accountResp.Accounts), len(accountResp.SubAccounts))
+	for i, acc := range allAccounts {
+		logger.Infof("  Account[%d]: index=%d, collateral=%s", i, acc.AccountIndex, acc.Collateral)
+	}
+
+	account := &allAccounts[0]
+	// Use index field if account_index is 0
+	if account.AccountIndex == 0 && account.Index != 0 {
+		account.AccountIndex = account.Index
+	}
+
+	return account, nil
 }
 
 // checkClient Verify if API Key is correct
@@ -281,8 +333,129 @@ func (t *LighterTraderV2) Cleanup() error {
 // GetClosedPnL gets closed position PnL records from exchange
 // LIGHTER does not have a direct closed PnL API, returns empty slice
 func (t *LighterTraderV2) GetClosedPnL(startTime time.Time, limit int) ([]ClosedPnLRecord, error) {
-	// LIGHTER does not provide a closed PnL history API
-	// Position closure data needs to be tracked locally via position sync
-	logger.Infof("⚠️  LIGHTER GetClosedPnL not supported, returning empty")
-	return []ClosedPnLRecord{}, nil
+	trades, err := t.GetTrades(startTime, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter only closing trades (realizedPnl != 0)
+	var records []ClosedPnLRecord
+	for _, trade := range trades {
+		if trade.RealizedPnL == 0 {
+			continue
+		}
+
+		side := "long"
+		if trade.Side == "SELL" || trade.Side == "Sell" {
+			side = "long"
+		} else {
+			side = "short"
+		}
+
+		var entryPrice float64
+		if trade.Quantity > 0 {
+			if side == "long" {
+				entryPrice = trade.Price - trade.RealizedPnL/trade.Quantity
+			} else {
+				entryPrice = trade.Price + trade.RealizedPnL/trade.Quantity
+			}
+		}
+
+		records = append(records, ClosedPnLRecord{
+			Symbol:      trade.Symbol,
+			Side:        side,
+			EntryPrice:  entryPrice,
+			ExitPrice:   trade.Price,
+			Quantity:    trade.Quantity,
+			RealizedPnL: trade.RealizedPnL,
+			Fee:         trade.Fee,
+			ExitTime:    trade.Time,
+			EntryTime:   trade.Time,
+			OrderID:     trade.TradeID,
+			ExchangeID:  trade.TradeID,
+			CloseType:   "unknown",
+		})
+	}
+
+	return records, nil
+}
+
+// GetTrades retrieves trade history from Lighter
+func (t *LighterTraderV2) GetTrades(startTime time.Time, limit int) ([]TradeRecord, error) {
+	// Ensure we have account index
+	if t.accountIndex == 0 {
+		if err := t.initializeAccount(); err != nil {
+			return nil, fmt.Errorf("failed to get account index: %w", err)
+		}
+	}
+
+	// Build request URL
+	startTimeMs := startTime.UnixMilli()
+	endpoint := fmt.Sprintf("%s/api/v1/trades?account_index=%d&start_time=%d",
+		t.baseURL, t.accountIndex, startTimeMs)
+	if limit > 0 {
+		endpoint = fmt.Sprintf("%s&limit=%d", endpoint, limit)
+	}
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get trades: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Infof("⚠️  Lighter trades API returned %d: %s", resp.StatusCode, string(body))
+		return []TradeRecord{}, nil
+	}
+
+	var response LighterTradeResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		var trades []LighterTrade
+		if err := json.Unmarshal(body, &trades); err != nil {
+			logger.Infof("⚠️  Failed to parse Lighter trades response: %v", err)
+			return []TradeRecord{}, nil
+		}
+		response.Trades = trades
+	}
+
+	// Convert to unified TradeRecord format
+	var result []TradeRecord
+	for _, lt := range response.Trades {
+		price, _ := parseFloat(lt.Price)
+		qty, _ := parseFloat(lt.Size)
+		fee, _ := parseFloat(lt.Fee)
+		pnl, _ := parseFloat(lt.RealizedPnl)
+
+		var side string
+		if strings.ToLower(lt.Side) == "buy" {
+			side = "BUY"
+		} else {
+			side = "SELL"
+		}
+
+		trade := TradeRecord{
+			TradeID:      lt.TradeID,
+			Symbol:       lt.Symbol,
+			Side:         side,
+			PositionSide: "BOTH",
+			Price:        price,
+			Quantity:     qty,
+			RealizedPnL:  pnl,
+			Fee:          fee,
+			Time:         time.UnixMilli(lt.Timestamp),
+		}
+		result = append(result, trade)
+	}
+
+	return result, nil
 }

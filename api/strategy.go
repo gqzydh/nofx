@@ -449,6 +449,16 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		marketDataMap[coin.Symbol] = data
 	}
 
+	// Fetch quantitative data for each candidate coin
+	symbols := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		symbols = append(symbols, c.Symbol)
+	}
+	quantDataMap := engine.FetchQuantDataBatch(symbols)
+
+	// Fetch OI ranking data (market-wide position changes)
+	oiRankingData := engine.FetchOIRankingData()
+
 	// Build real context (for generating User Prompt)
 	testContext := &decision.Context{
 		CurrentTime:    time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
@@ -468,6 +478,8 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		CandidateCoins: candidates,
 		PromptVariant:  req.PromptVariant,
 		MarketDataMap:  marketDataMap,
+		QuantDataMap:   quantDataMap,
+		OIRankingData:  oiRankingData,
 	}
 
 	// Build System Prompt
@@ -543,6 +555,21 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
 	case "deepseek":
 		aiClient = mcp.NewDeepSeekClient()
+		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
+	case "claude":
+		aiClient = mcp.NewClaudeClient()
+		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
+	case "kimi":
+		aiClient = mcp.NewKimiClient()
+		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
+	case "gemini":
+		aiClient = mcp.NewGeminiClient()
+		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
+	case "grok":
+		aiClient = mcp.NewGrokClient()
+		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
+	case "openai":
+		aiClient = mcp.NewOpenAIClient()
 		aiClient.SetAPIKey(model.APIKey, model.CustomAPIURL, model.CustomModelName)
 	default:
 		// Use generic client

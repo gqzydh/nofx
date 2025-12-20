@@ -14,6 +14,7 @@ import (
 	"nofx/manager"
 	"nofx/store"
 	"nofx/trader"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ type Server struct {
 	store           *store.Store
 	cryptoHandler   *CryptoHandler
 	backtestManager *backtest.Manager
+	debateHandler   *DebateHandler
 	httpServer      *http.Server
 	port            int
 }
@@ -45,12 +47,21 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 	// Create crypto handler
 	cryptoHandler := NewCryptoHandler(cryptoService)
 
+	// Create debate store and handler
+	debateStore := store.NewDebateStore(st.DB())
+	if err := debateStore.InitSchema(); err != nil {
+		logger.Errorf("Failed to initialize debate schema: %v", err)
+	}
+	debateHandler := NewDebateHandler(debateStore, st.Strategy(), st.AIModel())
+	debateHandler.SetTraderManager(traderManager)
+
 	s := &Server{
 		router:          router,
 		traderManager:   traderManager,
 		store:           st,
 		cryptoHandler:   cryptoHandler,
 		backtestManager: backtestManager,
+		debateHandler:   debateHandler,
 		port:            port,
 	}
 
@@ -132,6 +143,7 @@ func (s *Server) setupRoutes() {
 			protected.PUT("/traders/:id/prompt", s.handleUpdateTraderPrompt)
 			protected.POST("/traders/:id/sync-balance", s.handleSyncBalance)
 			protected.POST("/traders/:id/close-position", s.handleClosePosition)
+			protected.PUT("/traders/:id/competition", s.handleToggleCompetition)
 
 			// AI model configuration
 			protected.GET("/models", s.handleGetModelConfigs)
@@ -139,7 +151,9 @@ func (s *Server) setupRoutes() {
 
 			// Exchange configuration
 			protected.GET("/exchanges", s.handleGetExchangeConfigs)
+			protected.POST("/exchanges", s.handleCreateExchange)
 			protected.PUT("/exchanges", s.handleUpdateExchangeConfigs)
+			protected.DELETE("/exchanges/:id", s.handleDeleteExchange)
 
 			// Strategy management
 			protected.GET("/strategies", s.handleGetStrategies)
@@ -154,6 +168,19 @@ func (s *Server) setupRoutes() {
 			protected.POST("/strategies/:id/activate", s.handleActivateStrategy)
 			protected.POST("/strategies/:id/duplicate", s.handleDuplicateStrategy)
 
+			// Debate Arena
+			protected.GET("/debates", s.debateHandler.HandleListDebates)
+			protected.GET("/debates/personalities", s.debateHandler.HandleGetPersonalities)
+			protected.GET("/debates/:id", s.debateHandler.HandleGetDebate)
+			protected.POST("/debates", s.debateHandler.HandleCreateDebate)
+			protected.POST("/debates/:id/start", s.debateHandler.HandleStartDebate)
+			protected.POST("/debates/:id/cancel", s.debateHandler.HandleCancelDebate)
+			protected.POST("/debates/:id/execute", s.debateHandler.HandleExecuteDebate)
+			protected.DELETE("/debates/:id", s.debateHandler.HandleDeleteDebate)
+			protected.GET("/debates/:id/messages", s.debateHandler.HandleGetMessages)
+			protected.GET("/debates/:id/votes", s.debateHandler.HandleGetVotes)
+			protected.GET("/debates/:id/stream", s.debateHandler.HandleDebateStream)
+
 			// Data for specified trader (using query parameter ?trader_id=xxx)
 			protected.GET("/status", s.handleStatus)
 			protected.GET("/account", s.handleAccount)
@@ -161,6 +188,10 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
+
+			// Backtest routes
+			backtest := protected.Group("/backtest")
+			s.registerBacktestRoutes(backtest)
 		}
 	}
 }
@@ -349,7 +380,8 @@ type CreateTraderRequest struct {
 	StrategyID          string  `json:"strategy_id"` // Strategy ID (new version)
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
-	IsCrossMargin       *bool   `json:"is_cross_margin"` // Pointer type, nil means use default value true
+	IsCrossMargin       *bool   `json:"is_cross_margin"`     // Pointer type, nil means use default value true
+	ShowInCompetition   *bool   `json:"show_in_competition"` // Pointer type, nil means use default value true
 	// The following fields are kept for backward compatibility, new version uses strategy config
 	BTCETHLeverage       int    `json:"btc_eth_leverage"`
 	AltcoinLeverage      int    `json:"altcoin_leverage"`
@@ -392,14 +424,17 @@ type ExchangeConfig struct {
 
 // SafeExchangeConfig Safe exchange configuration structure (does not contain sensitive information)
 type SafeExchangeConfig struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	Type                  string `json:"type"` // "cex" or "dex"
+	ID                    string `json:"id"`            // UUID
+	ExchangeType          string `json:"exchange_type"` // "binance", "bybit", "okx", "hyperliquid", "aster", "lighter"
+	AccountName           string `json:"account_name"`  // User-defined account name
+	Name                  string `json:"name"`          // Display name
+	Type                  string `json:"type"`          // "cex" or "dex"
 	Enabled               bool   `json:"enabled"`
 	Testnet               bool   `json:"testnet,omitempty"`
 	HyperliquidWalletAddr string `json:"hyperliquidWalletAddr"` // Hyperliquid wallet address (not sensitive)
 	AsterUser             string `json:"asterUser"`             // Aster username (not sensitive)
 	AsterSigner           string `json:"asterSigner"`           // Aster signer (not sensitive)
+	LighterWalletAddr     string `json:"lighterWalletAddr"`     // LIGHTER wallet address (not sensitive)
 }
 
 type UpdateModelConfigRequest struct {
@@ -425,6 +460,7 @@ type UpdateExchangeConfigRequest struct {
 		LighterWalletAddr       string `json:"lighter_wallet_addr"`
 		LighterPrivateKey       string `json:"lighter_private_key"`
 		LighterAPIKeyPrivateKey string `json:"lighter_api_key_private_key"`
+		LighterAPIKeyIndex      int    `json:"lighter_api_key_index"`
 	} `json:"exchanges"`
 }
 
@@ -459,13 +495,22 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 	}
 
-	// Generate trader ID
-	traderID := fmt.Sprintf("%s_%s_%d", req.ExchangeID, req.AIModelID, time.Now().Unix())
+	// Generate trader ID (use short UUID prefix for readability)
+	exchangeIDShort := req.ExchangeID
+	if len(exchangeIDShort) > 8 {
+		exchangeIDShort = exchangeIDShort[:8]
+	}
+	traderID := fmt.Sprintf("%s_%s_%d", exchangeIDShort, req.AIModelID, time.Now().Unix())
 
 	// Set default values
 	isCrossMargin := true // Default to cross margin mode
 	if req.IsCrossMargin != nil {
 		isCrossMargin = *req.IsCrossMargin
+	}
+
+	showInCompetition := true // Default to show in competition
+	if req.ShowInCompetition != nil {
+		showInCompetition = *req.ShowInCompetition
 	}
 
 	// Set leverage default values
@@ -515,7 +560,8 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		var tempTrader trader.Trader
 		var createErr error
 
-		switch req.ExchangeID {
+		// Use ExchangeType (e.g., "binance") instead of ID (UUID)
+		switch exchangeCfg.ExchangeType {
 		case "binance":
 			tempTrader = trader.NewFuturesTrader(exchangeCfg.APIKey, exchangeCfg.SecretKey, userID)
 		case "hyperliquid":
@@ -535,8 +581,32 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 				exchangeCfg.APIKey,
 				exchangeCfg.SecretKey,
 			)
+		case "okx":
+			tempTrader = trader.NewOKXTrader(
+				exchangeCfg.APIKey,
+				exchangeCfg.SecretKey,
+				exchangeCfg.Passphrase,
+			)
+		case "bitget":
+			tempTrader = trader.NewBitgetTrader(
+				exchangeCfg.APIKey,
+				exchangeCfg.SecretKey,
+				exchangeCfg.Passphrase,
+			)
+		case "lighter":
+			if exchangeCfg.LighterWalletAddr != "" && exchangeCfg.LighterAPIKeyPrivateKey != "" {
+				// Lighter only supports mainnet
+				tempTrader, createErr = trader.NewLighterTraderV2(
+					exchangeCfg.LighterWalletAddr,
+					exchangeCfg.LighterAPIKeyPrivateKey,
+					exchangeCfg.LighterAPIKeyIndex,
+					false, // Always use mainnet for Lighter
+				)
+			} else {
+				createErr = fmt.Errorf("Lighter requires wallet address and API Key private key")
+			}
 		default:
-			logger.Infof("⚠️ Unsupported exchange type: %s, using user input for initial balance", req.ExchangeID)
+			logger.Infof("⚠️ Unsupported exchange type: %s, using user input for initial balance", exchangeCfg.ExchangeType)
 		}
 
 		if createErr != nil {
@@ -584,6 +654,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		OverrideBasePrompt:   req.OverrideBasePrompt,
 		SystemPromptTemplate: systemPromptTemplate,
 		IsCrossMargin:        isCrossMargin,
+		ShowInCompetition:    showInCompetition,
 		ScanIntervalMinutes:  scanIntervalMinutes,
 		IsRunning:            false,
 	}
@@ -626,6 +697,7 @@ type UpdateTraderRequest struct {
 	InitialBalance      float64 `json:"initial_balance"`
 	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
 	IsCrossMargin       *bool   `json:"is_cross_margin"`
+	ShowInCompetition   *bool   `json:"show_in_competition"`
 	// The following fields are kept for backward compatibility, new version uses strategy config
 	BTCETHLeverage       int    `json:"btc_eth_leverage"`
 	AltcoinLeverage      int    `json:"altcoin_leverage"`
@@ -670,6 +742,11 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	isCrossMargin := existingTrader.IsCrossMargin // Keep original value
 	if req.IsCrossMargin != nil {
 		isCrossMargin = *req.IsCrossMargin
+	}
+
+	showInCompetition := existingTrader.ShowInCompetition // Keep original value
+	if req.ShowInCompetition != nil {
+		showInCompetition = *req.ShowInCompetition
 	}
 
 	// Set leverage default values
@@ -718,24 +795,30 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		OverrideBasePrompt:   req.OverrideBasePrompt,
 		SystemPromptTemplate: systemPromptTemplate,
 		IsCrossMargin:        isCrossMargin,
+		ShowInCompetition:    showInCompetition,
 		ScanIntervalMinutes:  scanIntervalMinutes,
 		IsRunning:            existingTrader.IsRunning, // Keep original value
 	}
 
 	// Update database
+	logger.Infof("🔄 Updating trader: ID=%s, Name=%s, AIModelID=%s, StrategyID=%s, req.StrategyID=%s",
+		traderRecord.ID, traderRecord.Name, traderRecord.AIModelID, traderRecord.StrategyID, req.StrategyID)
 	err = s.store.Trader().Update(traderRecord)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to update trader: %v", err)})
 		return
 	}
 
-	// Reload traders into memory
+	// Remove old trader from memory first to ensure fresh config is loaded
+	s.traderManager.RemoveTrader(traderID)
+
+	// Reload traders into memory with fresh config
 	err = s.traderManager.LoadUserTradersFromStore(s.store, userID)
 	if err != nil {
 		logger.Infof("⚠️ Failed to reload user traders into memory: %v", err)
 	}
 
-	logger.Infof("✓ Trader updated successfully: %s (model: %s, exchange: %s)", req.Name, req.AIModelID, req.ExchangeID)
+	logger.Infof("✓ Trader updated successfully: %s (model: %s, exchange: %s, strategy: %s)", req.Name, req.AIModelID, req.ExchangeID, strategyID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"trader_id":   traderID,
@@ -785,54 +868,62 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		return
 	}
 
+	// Check if trader exists in memory and if it's running
+	existingTrader, _ := s.traderManager.GetTrader(traderID)
+	if existingTrader != nil {
+		status := existingTrader.GetStatus()
+		if isRunning, ok := status["is_running"].(bool); ok && isRunning {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Trader is already running"})
+			return
+		}
+		// Trader exists but is stopped - remove from memory to reload fresh config
+		logger.Infof("🔄 Removing stopped trader %s from memory to reload config...", traderID)
+		s.traderManager.RemoveTrader(traderID)
+	}
+
+	// Load trader from database (always reload to get latest config)
+	logger.Infof("🔄 Loading trader %s from database...", traderID)
+	if loadErr := s.traderManager.LoadUserTradersFromStore(s.store, userID); loadErr != nil {
+		logger.Infof("❌ Failed to load user traders: %v", loadErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load trader: " + loadErr.Error()})
+		return
+	}
+
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
-		// Trader not in memory, try loading from database
-		logger.Infof("🔄 Trader %s not in memory, trying to load...", traderID)
-		if loadErr := s.traderManager.LoadUserTradersFromStore(s.store, userID); loadErr != nil {
-			logger.Infof("❌ Failed to load user traders: %v", loadErr)
+		// Check detailed reason
+		fullCfg, _ := s.store.Trader().GetFullConfig(userID, traderID)
+		if fullCfg != nil && fullCfg.Trader != nil {
+			// Check strategy
+			if fullCfg.Strategy == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Trader has no strategy configured, please create a strategy in Strategy Studio and associate it with the trader"})
+				return
+			}
+			// Check AI model
+			if fullCfg.AIModel == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's AI model does not exist, please check AI model configuration"})
+				return
+			}
+			if !fullCfg.AIModel.Enabled {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's AI model is not enabled, please enable the AI model first"})
+				return
+			}
+			// Check exchange
+			if fullCfg.Exchange == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's exchange does not exist, please check exchange configuration"})
+				return
+			}
+			if !fullCfg.Exchange.Enabled {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's exchange is not enabled, please enable the exchange first"})
+				return
+			}
+		}
+		// Check if there's a specific load error
+		if loadErr := s.traderManager.GetLoadError(traderID); loadErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load trader: " + loadErr.Error()})
 			return
 		}
-		// Try to get trader again
-		trader, err = s.traderManager.GetTrader(traderID)
-		if err != nil {
-			// Check detailed reason
-			fullCfg, _ := s.store.Trader().GetFullConfig(userID, traderID)
-			if fullCfg != nil && fullCfg.Trader != nil {
-				// Check strategy
-				if fullCfg.Strategy == nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Trader has no strategy configured, please create a strategy in Strategy Studio and associate it with the trader"})
-					return
-				}
-				// Check AI model
-				if fullCfg.AIModel == nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's AI model does not exist, please check AI model configuration"})
-					return
-				}
-				if !fullCfg.AIModel.Enabled {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's AI model is not enabled, please enable the AI model first"})
-					return
-				}
-				// Check exchange
-				if fullCfg.Exchange == nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's exchange does not exist, please check exchange configuration"})
-					return
-				}
-				if !fullCfg.Exchange.Enabled {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Trader's exchange is not enabled, please enable the exchange first"})
-					return
-				}
-			}
-			c.JSON(http.StatusNotFound, gin.H{"error": "Failed to load trader, please check AI model, exchange and strategy configuration"})
-			return
-		}
-	}
-
-	// Check if trader is already running
-	status := trader.GetStatus()
-	if isRunning, ok := status["is_running"].(bool); ok && isRunning {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Trader is already running"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Failed to load trader, please check AI model, exchange and strategy configuration"})
 		return
 	}
 
@@ -925,6 +1016,43 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Custom prompt updated"})
 }
 
+// handleToggleCompetition Toggle trader competition visibility
+func (s *Server) handleToggleCompetition(c *gin.Context) {
+	traderID := c.Param("id")
+	userID := c.GetString("user_id")
+
+	var req struct {
+		ShowInCompetition bool `json:"show_in_competition"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update database
+	err := s.store.Trader().UpdateShowInCompetition(userID, traderID, req.ShowInCompetition)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to update competition visibility: %v", err)})
+		return
+	}
+
+	// Update in-memory trader if it exists
+	if trader, err := s.traderManager.GetTrader(traderID); err == nil {
+		trader.SetShowInCompetition(req.ShowInCompetition)
+	}
+
+	status := "shown"
+	if !req.ShowInCompetition {
+		status = "hidden"
+	}
+	logger.Infof("✓ Trader %s competition visibility updated: %s", traderID, status)
+	c.JSON(http.StatusOK, gin.H{
+		"message":             "Competition visibility updated",
+		"show_in_competition": req.ShowInCompetition,
+	})
+}
+
 // handleSyncBalance Sync exchange balance to initial_balance (Option B: Manual Sync + Option C: Smart Detection)
 func (s *Server) handleSyncBalance(c *gin.Context) {
 	userID := c.GetString("user_id")
@@ -951,7 +1079,8 @@ func (s *Server) handleSyncBalance(c *gin.Context) {
 	var tempTrader trader.Trader
 	var createErr error
 
-	switch traderConfig.ExchangeID {
+	// Use ExchangeType (e.g., "binance") instead of ExchangeID (which is now UUID)
+	switch exchangeCfg.ExchangeType {
 	case "binance":
 		tempTrader = trader.NewFuturesTrader(exchangeCfg.APIKey, exchangeCfg.SecretKey, userID)
 	case "hyperliquid":
@@ -971,6 +1100,30 @@ func (s *Server) handleSyncBalance(c *gin.Context) {
 			exchangeCfg.APIKey,
 			exchangeCfg.SecretKey,
 		)
+	case "okx":
+		tempTrader = trader.NewOKXTrader(
+			exchangeCfg.APIKey,
+			exchangeCfg.SecretKey,
+			exchangeCfg.Passphrase,
+		)
+	case "bitget":
+		tempTrader = trader.NewBitgetTrader(
+			exchangeCfg.APIKey,
+			exchangeCfg.SecretKey,
+			exchangeCfg.Passphrase,
+		)
+	case "lighter":
+		if exchangeCfg.LighterWalletAddr != "" && exchangeCfg.LighterAPIKeyPrivateKey != "" {
+			// Lighter only supports mainnet
+			tempTrader, createErr = trader.NewLighterTraderV2(
+				exchangeCfg.LighterWalletAddr,
+				exchangeCfg.LighterAPIKeyPrivateKey,
+				exchangeCfg.LighterAPIKeyIndex,
+				false, // Always use mainnet for Lighter
+			)
+		} else {
+			createErr = fmt.Errorf("Lighter requires wallet address and API Key private key")
+		}
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported exchange type"})
 		return
@@ -1066,7 +1219,6 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 		return
 	}
 
-	traderConfig := fullConfig.Trader
 	exchangeCfg := fullConfig.Exchange
 
 	if exchangeCfg == nil || !exchangeCfg.Enabled {
@@ -1078,7 +1230,8 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 	var tempTrader trader.Trader
 	var createErr error
 
-	switch traderConfig.ExchangeID {
+	// Use ExchangeType (e.g., "binance") instead of ExchangeID (which is now UUID)
+	switch exchangeCfg.ExchangeType {
 	case "binance":
 		tempTrader = trader.NewFuturesTrader(exchangeCfg.APIKey, exchangeCfg.SecretKey, userID)
 	case "hyperliquid":
@@ -1104,20 +1257,23 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 			exchangeCfg.SecretKey,
 			exchangeCfg.Passphrase,
 		)
+	case "bitget":
+		tempTrader = trader.NewBitgetTrader(
+			exchangeCfg.APIKey,
+			exchangeCfg.SecretKey,
+			exchangeCfg.Passphrase,
+		)
 	case "lighter":
-		if exchangeCfg.LighterAPIKeyPrivateKey != "" {
+		if exchangeCfg.LighterWalletAddr != "" && exchangeCfg.LighterAPIKeyPrivateKey != "" {
+			// Lighter only supports mainnet
 			tempTrader, createErr = trader.NewLighterTraderV2(
-				exchangeCfg.LighterPrivateKey,
 				exchangeCfg.LighterWalletAddr,
 				exchangeCfg.LighterAPIKeyPrivateKey,
-				exchangeCfg.Testnet,
+				exchangeCfg.LighterAPIKeyIndex,
+				false, // Always use mainnet for Lighter
 			)
 		} else {
-			tempTrader, createErr = trader.NewLighterTrader(
-				exchangeCfg.LighterPrivateKey,
-				exchangeCfg.LighterWalletAddr,
-				exchangeCfg.Testnet,
-			)
+			createErr = fmt.Errorf("Lighter requires wallet address and API Key private key")
 		}
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported exchange type"})
@@ -1179,6 +1335,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 			{ID: "claude", Name: "Claude AI", Provider: "claude", Enabled: false},
 			{ID: "gemini", Name: "Gemini AI", Provider: "gemini", Enabled: false},
 			{ID: "grok", Name: "Grok AI", Provider: "grok", Enabled: false},
+			{ID: "kimi", Name: "Kimi AI", Provider: "kimi", Enabled: false},
 		}
 		c.JSON(http.StatusOK, defaultModels)
 		return
@@ -1293,18 +1450,10 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 		return
 	}
 
-	// If no exchanges in database, return default exchanges
+	// If no exchanges in database, return empty array (user needs to create accounts)
 	if len(exchanges) == 0 {
-		logger.Infof("⚠️ No exchanges in database, returning defaults")
-		defaultExchanges := []SafeExchangeConfig{
-			{ID: "binance", Name: "Binance", Type: "cex", Enabled: false},
-			{ID: "bybit", Name: "Bybit", Type: "cex", Enabled: false},
-			{ID: "okx", Name: "OKX", Type: "cex", Enabled: false},
-			{ID: "hyperliquid", Name: "Hyperliquid", Type: "dex", Enabled: false},
-			{ID: "aster", Name: "Aster", Type: "dex", Enabled: false},
-			{ID: "lighter", Name: "LIGHTER", Type: "dex", Enabled: false},
-		}
-		c.JSON(http.StatusOK, defaultExchanges)
+		logger.Infof("⚠️ No exchanges in database for user %s", userID)
+		c.JSON(http.StatusOK, []SafeExchangeConfig{})
 		return
 	}
 
@@ -1315,6 +1464,8 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 	for i, exchange := range exchanges {
 		safeExchanges[i] = SafeExchangeConfig{
 			ID:                    exchange.ID,
+			ExchangeType:          exchange.ExchangeType,
+			AccountName:           exchange.AccountName,
 			Name:                  exchange.Name,
 			Type:                  exchange.Type,
 			Enabled:               exchange.Enabled,
@@ -1322,6 +1473,7 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 			HyperliquidWalletAddr: exchange.HyperliquidWalletAddr,
 			AsterUser:             exchange.AsterUser,
 			AsterSigner:           exchange.AsterSigner,
+			LighterWalletAddr:     exchange.LighterWalletAddr,
 		}
 	}
 
@@ -1390,7 +1542,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	// Update each exchange's configuration
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.store.Exchange().Update(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.LighterWalletAddr, exchangeData.LighterPrivateKey, exchangeData.LighterAPIKeyPrivateKey)
+		err := s.store.Exchange().Update(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.LighterWalletAddr, exchangeData.LighterPrivateKey, exchangeData.LighterAPIKeyPrivateKey, exchangeData.LighterAPIKeyIndex)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to update exchange %s: %v", exchangeID, err)})
 			return
@@ -1406,6 +1558,146 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	logger.Infof("✓ Exchange config updated: %+v", req.Exchanges)
 	c.JSON(http.StatusOK, gin.H{"message": "Exchange configuration updated"})
+}
+
+// CreateExchangeRequest request structure for creating a new exchange account
+type CreateExchangeRequest struct {
+	ExchangeType            string `json:"exchange_type" binding:"required"` // "binance", "bybit", "okx", "hyperliquid", "aster", "lighter"
+	AccountName             string `json:"account_name"`                     // User-defined account name
+	Enabled                 bool   `json:"enabled"`
+	APIKey                  string `json:"api_key"`
+	SecretKey               string `json:"secret_key"`
+	Passphrase              string `json:"passphrase"`
+	Testnet                 bool   `json:"testnet"`
+	HyperliquidWalletAddr   string `json:"hyperliquid_wallet_addr"`
+	AsterUser               string `json:"aster_user"`
+	AsterSigner             string `json:"aster_signer"`
+	AsterPrivateKey         string `json:"aster_private_key"`
+	LighterWalletAddr       string `json:"lighter_wallet_addr"`
+	LighterPrivateKey       string `json:"lighter_private_key"`
+	LighterAPIKeyPrivateKey string `json:"lighter_api_key_private_key"`
+	LighterAPIKeyIndex      int    `json:"lighter_api_key_index"`
+}
+
+// handleCreateExchange Create a new exchange account
+func (s *Server) handleCreateExchange(c *gin.Context) {
+	userID := c.GetString("user_id")
+	cfg := config.Get()
+
+	// Read raw request body
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	var req CreateExchangeRequest
+
+	// Check if transport encryption is enabled
+	if !cfg.TransportEncryption {
+		// Transport encryption disabled, accept plain JSON
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			logger.Infof("❌ Failed to parse plain JSON request: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+			return
+		}
+	} else {
+		// Transport encryption enabled, require encrypted payload
+		var encryptedPayload crypto.EncryptedPayload
+		if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format, encrypted transmission required"})
+			return
+		}
+
+		if encryptedPayload.WrappedKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "This endpoint only supports encrypted transmission",
+				"code":    "ENCRYPTION_REQUIRED",
+				"message": "Encrypted transmission is required for security reasons",
+			})
+			return
+		}
+
+		decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decrypt data"})
+			return
+		}
+
+		if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse decrypted data"})
+			return
+		}
+	}
+
+	// Validate exchange type
+	validTypes := map[string]bool{
+		"binance": true, "bybit": true, "okx": true, "bitget": true,
+		"hyperliquid": true, "aster": true, "lighter": true,
+	}
+	if !validTypes[req.ExchangeType] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid exchange type: %s", req.ExchangeType)})
+		return
+	}
+
+	// Create new exchange account
+	id, err := s.store.Exchange().Create(
+		userID, req.ExchangeType, req.AccountName, req.Enabled,
+		req.APIKey, req.SecretKey, req.Passphrase, req.Testnet,
+		req.HyperliquidWalletAddr, req.AsterUser, req.AsterSigner, req.AsterPrivateKey,
+		req.LighterWalletAddr, req.LighterPrivateKey, req.LighterAPIKeyPrivateKey, req.LighterAPIKeyIndex,
+	)
+	if err != nil {
+		logger.Infof("❌ Failed to create exchange account: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create exchange account: %v", err)})
+		return
+	}
+
+	logger.Infof("✓ Created exchange account: type=%s, name=%s, id=%s", req.ExchangeType, req.AccountName, id)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Exchange account created",
+		"id":      id,
+	})
+}
+
+// handleDeleteExchange Delete an exchange account
+func (s *Server) handleDeleteExchange(c *gin.Context) {
+	userID := c.GetString("user_id")
+	exchangeID := c.Param("id")
+
+	if exchangeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Exchange ID is required"})
+		return
+	}
+
+	// Check if any traders are using this exchange
+	traders, err := s.store.Trader().List(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check traders"})
+		return
+	}
+
+	for _, trader := range traders {
+		if trader.ExchangeID == exchangeID {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":       "Cannot delete exchange account that is in use by traders",
+				"trader_id":   trader.ID,
+				"trader_name": trader.Name,
+			})
+			return
+		}
+	}
+
+	// Delete exchange account
+	err = s.store.Exchange().Delete(userID, exchangeID)
+	if err != nil {
+		logger.Infof("❌ Failed to delete exchange account: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to delete exchange account: %v", err)})
+		return
+	}
+
+	logger.Infof("✓ Deleted exchange account: id=%s", exchangeID)
+	c.JSON(http.StatusOK, gin.H{"message": "Exchange account deleted"})
 }
 
 // handleTraderList Trader list
@@ -1439,14 +1731,15 @@ func (s *Server) handleTraderList(c *gin.Context) {
 		// Return complete AIModelID (e.g. "admin_deepseek"), don't truncate
 		// Frontend needs complete ID to verify model exists (consistent with handleGetTraderConfig)
 		result = append(result, map[string]interface{}{
-			"trader_id":       trader.ID,
-			"trader_name":     trader.Name,
-			"ai_model":        trader.AIModelID, // Use complete ID
-			"exchange_id":     trader.ExchangeID,
-			"is_running":      isRunning,
-			"initial_balance": trader.InitialBalance,
-			"strategy_id":     trader.StrategyID,
-			"strategy_name":   strategyName,
+			"trader_id":           trader.ID,
+			"trader_name":         trader.Name,
+			"ai_model":            trader.AIModelID, // Use complete ID
+			"exchange_id":         trader.ExchangeID,
+			"is_running":          isRunning,
+			"show_in_competition": trader.ShowInCompetition,
+			"initial_balance":     trader.InitialBalance,
+			"strategy_id":         trader.StrategyID,
+			"strategy_name":       strategyName,
 		})
 	}
 
@@ -1487,6 +1780,7 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 		"trader_name":           traderConfig.Name,
 		"ai_model":              aiModelID,
 		"exchange_id":           traderConfig.ExchangeID,
+		"strategy_id":           traderConfig.StrategyID,
 		"initial_balance":       traderConfig.InitialBalance,
 		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
 		"btc_eth_leverage":      traderConfig.BTCETHLeverage,
@@ -1605,7 +1899,7 @@ func (s *Server) handleDecisions(c *gin.Context) {
 	c.JSON(http.StatusOK, records)
 }
 
-// handleLatestDecisions Latest decision logs (most recent 5, newest first)
+// handleLatestDecisions Latest decision logs (newest first, supports limit parameter)
 func (s *Server) handleLatestDecisions(c *gin.Context) {
 	_, traderID, err := s.getTraderFromQuery(c)
 	if err != nil {
@@ -1619,7 +1913,18 @@ func (s *Server) handleLatestDecisions(c *gin.Context) {
 		return
 	}
 
-	records, err := trader.GetStore().Decision().GetLatestRecords(trader.GetID(), 5)
+	// Get limit from query parameter, default to 5
+	limit := 5
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+			if limit > 100 {
+				limit = 100 // Max 100 to prevent abuse
+			}
+		}
+	}
+
+	records, err := trader.GetStore().Decision().GetLatestRecords(trader.GetID(), limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to get decision log: %v", err),
@@ -1821,6 +2126,20 @@ func (s *Server) handleRegister(c *gin.Context) {
 	if !config.Get().RegistrationEnabled {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Registration is disabled"})
 		return
+	}
+
+	// Check max users limit
+	maxUsers := config.Get().MaxUsers
+	if maxUsers > 0 {
+		userCount, err := s.store.User().Count()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check user count"})
+			return
+		}
+		if userCount >= maxUsers {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not on whitelist"})
+			return
+		}
 	}
 
 	var req struct {
@@ -2072,10 +2391,15 @@ func (s *Server) initUserDefaultConfigs(userID string) error {
 
 // handleGetSupportedModels Get list of AI models supported by the system
 func (s *Server) handleGetSupportedModels(c *gin.Context) {
-	// Return static list of supported AI models
+	// Return static list of supported AI models with default versions
 	supportedModels := []map[string]interface{}{
-		{"id": "deepseek", "name": "DeepSeek", "provider": "deepseek"},
-		{"id": "qwen", "name": "Qwen", "provider": "qwen"},
+		{"id": "deepseek", "name": "DeepSeek", "provider": "deepseek", "defaultModel": "deepseek-chat"},
+		{"id": "qwen", "name": "Qwen", "provider": "qwen", "defaultModel": "qwen3-max"},
+		{"id": "openai", "name": "OpenAI", "provider": "openai", "defaultModel": "gpt-5.1"},
+		{"id": "claude", "name": "Claude", "provider": "claude", "defaultModel": "claude-opus-4-5-20251101"},
+		{"id": "gemini", "name": "Google Gemini", "provider": "gemini", "defaultModel": "gemini-3-pro-preview"},
+		{"id": "grok", "name": "Grok (xAI)", "provider": "grok", "defaultModel": "grok-3-latest"},
+		{"id": "kimi", "name": "Kimi (Moonshot)", "provider": "kimi", "defaultModel": "moonshot-v1-auto"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)
@@ -2083,14 +2407,15 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 
 // handleGetSupportedExchanges Get list of exchanges supported by the system
 func (s *Server) handleGetSupportedExchanges(c *gin.Context) {
-	// Return static list of supported exchanges
+	// Return static list of supported exchange types
+	// Note: ID is empty for supported exchanges (they are templates, not actual accounts)
 	supportedExchanges := []SafeExchangeConfig{
-		{ID: "binance", Name: "Binance Futures", Type: "binance"},
-		{ID: "bybit", Name: "Bybit Futures", Type: "bybit"},
-		{ID: "okx", Name: "OKX Futures", Type: "okx"},
-		{ID: "hyperliquid", Name: "Hyperliquid", Type: "hyperliquid"},
-		{ID: "aster", Name: "Aster DEX", Type: "aster"},
-		{ID: "lighter", Name: "LIGHTER DEX", Type: "lighter"},
+		{ExchangeType: "binance", Name: "Binance Futures", Type: "cex"},
+		{ExchangeType: "bybit", Name: "Bybit Futures", Type: "cex"},
+		{ExchangeType: "okx", Name: "OKX Futures", Type: "cex"},
+		{ExchangeType: "hyperliquid", Name: "Hyperliquid", Type: "dex"},
+		{ExchangeType: "aster", Name: "Aster DEX", Type: "dex"},
+		{ExchangeType: "lighter", Name: "LIGHTER DEX", Type: "dex"},
 	}
 
 	c.JSON(http.StatusOK, supportedExchanges)
@@ -2215,9 +2540,11 @@ func (s *Server) handleTopTraders(c *gin.Context) {
 }
 
 // handleEquityHistoryBatch Batch get return rate historical data for multiple traders (no authentication required, for performance comparison)
+// Supports optional 'hours' parameter to filter data by time range (e.g., hours=24 for last 24 hours)
 func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 	var requestBody struct {
 		TraderIDs []string `json:"trader_ids"`
+		Hours     int      `json:"hours"` // Optional: filter by last N hours (0 = all data)
 	}
 
 	// Try to parse POST request JSON body
@@ -2248,7 +2575,14 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 				}
 			}
 
-			result := s.getEquityHistoryForTraders(traderIDs)
+			// Parse hours parameter from query
+			hoursParam := c.Query("hours")
+			hours := 0
+			if hoursParam != "" {
+				fmt.Sscanf(hoursParam, "%d", &hours)
+			}
+
+			result := s.getEquityHistoryForTraders(traderIDs, hours)
 			c.JSON(http.StatusOK, result)
 			return
 		}
@@ -2258,6 +2592,12 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 		for i := range requestBody.TraderIDs {
 			requestBody.TraderIDs[i] = strings.TrimSpace(requestBody.TraderIDs[i])
 		}
+
+		// Parse hours parameter from query
+		hoursParam := c.Query("hours")
+		if hoursParam != "" {
+			fmt.Sscanf(hoursParam, "%d", &requestBody.Hours)
+		}
 	}
 
 	// Limit to maximum 20 traders to prevent oversized requests
@@ -2265,16 +2605,21 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 		requestBody.TraderIDs = requestBody.TraderIDs[:20]
 	}
 
-	result := s.getEquityHistoryForTraders(requestBody.TraderIDs)
+	result := s.getEquityHistoryForTraders(requestBody.TraderIDs, requestBody.Hours)
 	c.JSON(http.StatusOK, result)
 }
 
 // getEquityHistoryForTraders Get historical data for multiple traders
 // Query directly from database, not dependent on trader in memory (so historical data can be retrieved after restart)
-func (s *Server) getEquityHistoryForTraders(traderIDs []string) map[string]interface{} {
+// Also appends current real-time data point to ensure chart matches leaderboard
+// hours: filter by last N hours (0 = use default limit of 500 records)
+func (s *Server) getEquityHistoryForTraders(traderIDs []string, hours int) map[string]interface{} {
 	result := make(map[string]interface{})
 	histories := make(map[string]interface{})
 	errors := make(map[string]string)
+
+	// Use a single consistent timestamp for all real-time data points
+	now := time.Now()
 
 	// Pre-fetch initial balances for all traders
 	initialBalances := make(map[string]float64)
@@ -2295,27 +2640,32 @@ func (s *Server) getEquityHistoryForTraders(traderIDs []string) map[string]inter
 		}
 
 		// Get equity historical data from new equity table
-		snapshots, err := s.store.Equity().GetLatest(traderID, 500)
+		var snapshots []*store.EquitySnapshot
+		var err error
+
+		if hours > 0 {
+			// Filter by time range
+			startTime := now.Add(-time.Duration(hours) * time.Hour)
+			snapshots, err = s.store.Equity().GetByTimeRange(traderID, startTime, now)
+		} else {
+			// Default: get latest 500 records
+			snapshots, err = s.store.Equity().GetLatest(traderID, 500)
+		}
 		if err != nil {
 			errors[traderID] = fmt.Sprintf("Failed to get historical data: %v", err)
 			continue
 		}
 
-		if len(snapshots) == 0 {
-			// No historical records, return empty array
-			histories[traderID] = []map[string]interface{}{}
-			continue
-		}
-
 		// Get initial balance for calculating PnL percentage
 		initialBalance := initialBalances[traderID]
-		if initialBalance <= 0 {
+		if initialBalance <= 0 && len(snapshots) > 0 {
 			// If no initial balance configured, use the first snapshot's equity as baseline
 			initialBalance = snapshots[0].TotalEquity
 		}
 
 		// Build return rate historical data with PnL percentage
-		history := make([]map[string]interface{}, 0, len(snapshots))
+		history := make([]map[string]interface{}, 0, len(snapshots)+1)
+		var lastSnapshotTime time.Time
 		for _, snap := range snapshots {
 			// Calculate PnL percentage: (current_equity - initial_balance) / initial_balance * 100
 			pnlPct := 0.0
@@ -2330,6 +2680,43 @@ func (s *Server) getEquityHistoryForTraders(traderIDs []string) map[string]inter
 				"total_pnl_pct": pnlPct,
 				"balance":       snap.Balance,
 			})
+			if snap.Timestamp.After(lastSnapshotTime) {
+				lastSnapshotTime = snap.Timestamp
+			}
+		}
+
+		// Append current real-time data point to ensure chart matches leaderboard
+		// This ensures the latest point is always current, not from a potentially stale snapshot
+		if trader, err := s.traderManager.GetTrader(traderID); err == nil {
+			if accountInfo, err := trader.GetAccountInfo(); err == nil {
+				// Only append if it's been more than 30 seconds since last snapshot
+				if now.Sub(lastSnapshotTime) > 30*time.Second {
+					totalEquity := 0.0
+					if v, ok := accountInfo["total_equity"].(float64); ok {
+						totalEquity = v
+					}
+					totalPnL := 0.0
+					if v, ok := accountInfo["total_pnl"].(float64); ok {
+						totalPnL = v
+					}
+					walletBalance := 0.0
+					if v, ok := accountInfo["wallet_balance"].(float64); ok {
+						walletBalance = v
+					}
+					pnlPct := 0.0
+					if initialBalance > 0 {
+						pnlPct = (totalEquity - initialBalance) / initialBalance * 100
+					}
+
+					history = append(history, map[string]interface{}{
+						"timestamp":     now,
+						"total_equity":  totalEquity,
+						"total_pnl":     totalPnL,
+						"total_pnl_pct": pnlPct,
+						"balance":       walletBalance,
+					})
+				}
+			}
 		}
 
 		histories[traderID] = history

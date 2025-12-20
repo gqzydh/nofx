@@ -82,6 +82,7 @@ type IndicatorConfig struct {
 	EnableMACD        bool `json:"enable_macd"`
 	EnableRSI         bool `json:"enable_rsi"`
 	EnableATR         bool `json:"enable_atr"`
+	EnableBOLL        bool `json:"enable_boll"`         // Bollinger Bands
 	EnableVolume      bool `json:"enable_volume"`
 	EnableOI          bool `json:"enable_oi"`           // open interest
 	EnableFundingRate bool `json:"enable_funding_rate"` // funding rate
@@ -91,6 +92,8 @@ type IndicatorConfig struct {
 	RSIPeriods []int `json:"rsi_periods,omitempty"` // default [7, 14]
 	// ATR period configuration
 	ATRPeriods []int `json:"atr_periods,omitempty"` // default [14]
+	// BOLL period configuration (period, standard deviation multiplier is fixed at 2)
+	BOLLPeriods []int `json:"boll_periods,omitempty"` // default [20] - can select multiple timeframes
 	// external data sources
 	ExternalDataSources []ExternalDataSource `json:"external_data_sources,omitempty"`
 	// quantitative data sources (capital flow, position changes, price changes)
@@ -98,6 +101,11 @@ type IndicatorConfig struct {
 	QuantDataAPIURL    string `json:"quant_data_api_url,omitempty"`   // quantitative data API address
 	EnableQuantOI      bool   `json:"enable_quant_oi"`                // whether to show OI data
 	EnableQuantNetflow bool   `json:"enable_quant_netflow"`           // whether to show Netflow data
+	// OI ranking data (market-wide open interest increase/decrease rankings)
+	EnableOIRanking   bool   `json:"enable_oi_ranking"`             // whether to enable OI ranking data
+	OIRankingAPIURL   string `json:"oi_ranking_api_url,omitempty"`  // OI ranking API base URL
+	OIRankingDuration string `json:"oi_ranking_duration,omitempty"` // duration: 1h, 4h, 24h
+	OIRankingLimit    int    `json:"oi_ranking_limit,omitempty"`    // number of entries (default 10)
 }
 
 // KlineConfig K-line configuration
@@ -236,16 +244,23 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			EnableMACD:        false,
 			EnableRSI:         false,
 			EnableATR:         false,
+			EnableBOLL:        false,
 			EnableVolume:      true,
 			EnableOI:          true,
 			EnableFundingRate: true,
 			EMAPeriods:        []int{20, 50},
 			RSIPeriods:        []int{7, 14},
 			ATRPeriods:        []int{14},
+			BOLLPeriods:       []int{20},
 			EnableQuantData:    true,
 			QuantDataAPIURL:    "http://nofxaios.com:30006/api/coin/{symbol}?include=netflow,oi,price&auth=cm_568c67eae410d912c54c",
 			EnableQuantOI:      true,
 			EnableQuantNetflow: true,
+			// OI ranking data - market-wide OI increase/decrease rankings
+			EnableOIRanking:   true,
+			OIRankingAPIURL:   "http://nofxaios.com:30006",
+			OIRankingDuration: "1h",
+			OIRankingLimit:    10,
 		},
 		RiskControl: RiskControlConfig{
 			MaxPositions:                    3,   // Max 3 coins simultaneously (CODE ENFORCED)
