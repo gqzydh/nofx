@@ -127,3 +127,8 @@ PR_DESCRIPTION.md
 keys/
 .env/
 .env_rsa/
+
+# 回测数据
+backtests/
+*.log
+*.tmp
