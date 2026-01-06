@@ -128,7 +128,7 @@ keys/
 .env/
 .env_rsa/
 
-# 回测数据
+# 回测
 backtests/
 *.log
 *.tmp

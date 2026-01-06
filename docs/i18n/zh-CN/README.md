@@ -4,7 +4,6 @@
 [![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat&logo=react)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Backed by Amber.ac](https://img.shields.io/badge/Backed%20by-Amber.ac-orange.svg)](https://amber.ac)
 
 > **语言声明：** 本中文版本文档仅为方便海外华人社区阅读而提供，不代表本软件面向中国大陆、香港、澳门或台湾地区用户开放。如您位于上述地区，请勿使用本软件。
 
@@ -30,8 +29,6 @@
 - **Web 配置**: 无需编辑 JSON - 通过 Web 界面完成所有配置
 - **实时仪表板**: 实时持仓、盈亏追踪、AI 决策日志与思维链
 
-### 由 [Amber.ac](https://amber.ac) 支持
-
 ### 核心团队
 
 - **Tinkle** - [@Web3Tinkle](https://x.com/Web3Tinkle)
@@ -45,19 +42,12 @@
 
 ---
 
-## 截图
+## 开始之前
 
-### 竞赛模式 - 实时 AI 对战
-![竞赛页面](../../../screenshots/competition-page.png)
-*多 AI 排行榜，实时性能对比*
+使用 NOFX 你需要准备:
 
-### 仪表板 - 市场图表视图
-![仪表板市场图表](../../../screenshots/dashboard-market-chart.png)
-*专业交易仪表板，TradingView 风格图表*
-
-### 策略工作室
-![策略工作室](../../../screenshots/strategy-studio.png)
-*多数据源策略配置与 AI 测试*
+1. **交易所账户** - 在任意支持的交易所注册并创建具有交易权限的 API 凭证
+2. **AI 模型 API Key** - 从任意支持的提供商获取（推荐 DeepSeek，性价比最高）
 
 ---
 
@@ -70,6 +60,7 @@
 | **Binance** | ✅ 已支持 | [注册](https://www.binance.com/join?ref=NOFXENG) |
 | **Bybit** | ✅ 已支持 | [注册](https://partner.bybit.com/b/83856) |
 | **OKX** | ✅ 已支持 | [注册](https://www.okx.com/join/1865360) |
+| **Bitget** | ✅ 已支持 | [注册](https://www.bitget.com/referral/register?from=referral&clacCode=c8a43172) |
 
 ### Perp-DEX (去中心化永续交易所)
 
@@ -95,9 +86,25 @@
 
 ---
 
+## 截图
+
+### 竞赛模式 - 实时 AI 对战
+![竞赛页面](../../../screenshots/competition-page.png)
+*多 AI 排行榜，实时性能对比*
+
+### 仪表板 - 市场图表视图
+![仪表板市场图表](../../../screenshots/dashboard-market-chart.png)
+*专业交易仪表板，TradingView 风格图表*
+
+### 策略工作室
+![策略工作室](../../../screenshots/strategy-studio.png)
+*多数据源策略配置与 AI 测试*
+
+---
+
 ## 快速开始
 
-### 一键安装 (推荐)
+### 一键安装 (本地/服务器)
 
 **Linux / macOS:**
 ```bash
@@ -105,6 +112,14 @@ curl -fsSL https://raw.githubusercontent.com/NoFxAiOS/nofx/main/install.sh | bas
 ```
 
 完成！打开浏览器访问 **http://127.0.0.1:3000**
+
+### 一键云部署 (Railway)
+
+一键部署到 Railway - 无需自己搭建服务器：
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/nofx?referralCode=nofx)
+
+部署后，Railway 会提供一个公网 URL 访问你的 NOFX 实例。
 
 ### Docker Compose (手动)
 

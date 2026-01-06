@@ -18,11 +18,11 @@ export const translations = {
     view: 'View',
 
     // Navigation
-    realtimeNav: 'Live',
+    realtimeNav: 'Leaderboard',
     configNav: 'Config',
     dashboardNav: 'Dashboard',
     strategyNav: 'Strategy',
-    debateNav: 'Debate Arena',
+    debateNav: 'Arena',
     faqNav: 'FAQ',
 
     // Footer
@@ -504,7 +504,7 @@ export const translations = {
     noExchangesConfigured: 'No configured exchanges',
     signalSource: 'Signal Source',
     signalSourceConfig: 'Signal Source Configuration',
-    coinPoolDescription:
+    ai500Description:
       'API endpoint for AI500 data provider, leave blank to disable this signal source',
     oiTopDescription:
       'API endpoint for open interest rankings, leave blank to disable this signal source',
@@ -687,8 +687,7 @@ export const translations = {
     heroTitle2: 'Write the Trade.',
     heroDescription:
       'NOFX is the future standard for AI trading — an open, community-driven agentic trading OS. Supporting Binance, Aster DEX and other exchanges, self-hosted, multi-agent competition, let AI automatically make decisions, execute and optimize trades for you.',
-    poweredBy:
-      'Powered by Aster DEX and Binance, strategically invested by Amber.ac.',
+    poweredBy: 'Powered by Aster DEX and Binance.',
 
     // Landing Page CTA
     readyToDefine: 'Ready to define the future of AI trading?',
@@ -751,7 +750,7 @@ export const translations = {
       'Four simple steps to start your AI automated trading journey',
     step1Title: 'Clone GitHub Repository',
     step1Desc:
-      'git clone https://github.com/tinkle-community/nofx and switch to dev branch to test new features.',
+      'git clone https://github.com/NoFxAiOS/nofx and switch to dev branch to test new features.',
     step2Title: 'Configure Environment',
     step2Desc:
       'Frontend setup for exchange APIs (like Binance, Hyperliquid), AI models and custom prompts.',
@@ -785,7 +784,7 @@ export const translations = {
     candidateCoins: 'Candidate Coins',
     candidateCoinsZeroWarning: 'Candidate Coins Count is 0',
     possibleReasons: 'Possible Reasons:',
-    coinPoolApiNotConfigured:
+    ai500ApiNotConfigured:
       'AI500 data provider API not configured or inaccessible (check signal source settings)',
     apiConnectionTimeout: 'API connection timeout or returned empty data',
     noCustomCoinsAndApiFailed:
@@ -793,7 +792,7 @@ export const translations = {
     solutions: 'Solutions:',
     setCustomCoinsInConfig: 'Set custom coin list in trader configuration',
     orConfigureCorrectApiUrl: 'Or configure correct data provider API address',
-    orDisableCoinPoolOptions:
+    orDisableAI500Options:
       'Or disable "Use AI500 Data Provider" and "Use OI Top" options',
     signalSourceNotConfigured: 'Signal Source Not Configured',
     signalSourceWarningMessage:
@@ -1092,6 +1091,56 @@ export const translations = {
       privatekeyObfuscationFailed: 'Clipboard obfuscation failed',
     },
 
+    // Position History
+    positionHistory: {
+      title: 'Position History',
+      loading: 'Loading position history...',
+      noHistory: 'No Position History',
+      noHistoryDesc: 'Closed positions will appear here after trading.',
+      showingPositions: 'Showing {count} of {total} positions',
+      totalPnL: 'Total P&L',
+      // Stats
+      totalTrades: 'Total Trades',
+      winLoss: 'Win: {win} / Loss: {loss}',
+      winRate: 'Win Rate',
+      profitFactor: 'Profit Factor',
+      profitFactorDesc: 'Total Profit / Total Loss',
+      plRatio: 'P/L Ratio',
+      plRatioDesc: 'Avg Win / Avg Loss',
+      sharpeRatio: 'Sharpe Ratio',
+      sharpeRatioDesc: 'Risk-adjusted Return',
+      maxDrawdown: 'Max Drawdown',
+      avgWin: 'Avg Win',
+      avgLoss: 'Avg Loss',
+      netPnL: 'Net P&L',
+      netPnLDesc: 'After Fees',
+      fee: 'Fee',
+      // Direction Stats
+      trades: 'Trades',
+      avgPnL: 'Avg P&L',
+      // Symbol Performance
+      symbolPerformance: 'Symbol Performance',
+      // Filters
+      symbol: 'Symbol',
+      allSymbols: 'All Symbols',
+      side: 'Side',
+      all: 'All',
+      sort: 'Sort',
+      latestFirst: 'Latest First',
+      oldestFirst: 'Oldest First',
+      highestPnL: 'Highest P&L',
+      lowestPnL: 'Lowest P&L',
+      // Table Headers
+      entry: 'Entry',
+      exit: 'Exit',
+      qty: 'Qty',
+      value: 'Value',
+      lev: 'Lev',
+      pnl: 'P&L',
+      duration: 'Duration',
+      closedAt: 'Closed At',
+    },
+
     // Debate Arena Page
     debatePage: {
       title: 'Market Debate Arena',
@@ -1178,11 +1227,11 @@ export const translations = {
     view: '查看',
 
     // Navigation
-    realtimeNav: '实时',
+    realtimeNav: '排行榜',
     configNav: '配置',
     dashboardNav: '看板',
     strategyNav: '策略',
-    debateNav: '行情辩论',
+    debateNav: '竞技场',
     faqNav: '常见问题',
 
     // Footer
@@ -1643,7 +1692,7 @@ export const translations = {
     noExchangesConfigured: '暂无已配置的交易所',
     signalSource: '信号源',
     signalSourceConfig: '信号源配置',
-    coinPoolDescription:
+    ai500Description:
       '用于获取 AI500 数据源的 API 地址，留空则不使用此数据源',
     oiTopDescription: '用于获取持仓量排行数据的API地址，留空则不使用此信号源',
     information: '说明',
@@ -1805,7 +1854,7 @@ export const translations = {
     heroTitle2: 'Write the Trade.',
     heroDescription:
       'NOFX 是 AI 交易的未来标准——一个开放、社区驱动的代理式交易操作系统。支持 Binance、Aster DEX 等交易所，自托管、多代理竞争，让 AI 为你自动决策、执行和优化交易。',
-    poweredBy: '由 Aster DEX 和 Binance 提供支持，Amber.ac 战略投资。',
+    poweredBy: '由 Aster DEX 和 Binance 提供支持。',
 
     // Landing Page CTA
     readyToDefine: '准备好定义 AI 交易的未来吗？',
@@ -1859,7 +1908,7 @@ export const translations = {
     fourSimpleSteps: '四个简单步骤，开启 AI 自动交易之旅',
     step1Title: '拉取 GitHub 仓库',
     step1Desc:
-      'git clone https://github.com/tinkle-community/nofx 并切换到 dev 分支测试新功能。',
+      'git clone https://github.com/NoFxAiOS/nofx 并切换到 dev 分支测试新功能。',
     step2Title: '配置环境',
     step2Desc:
       '前端设置交易所 API（如 Binance、Hyperliquid）、AI 模型和自定义提示词。',
@@ -1891,14 +1940,14 @@ export const translations = {
     candidateCoins: '候选币种',
     candidateCoinsZeroWarning: '候选币种数量为 0',
     possibleReasons: '可能原因：',
-    coinPoolApiNotConfigured:
+    ai500ApiNotConfigured:
       'AI500 数据源 API 未配置或无法访问（请检查信号源设置）',
     apiConnectionTimeout: 'API连接超时或返回数据为空',
     noCustomCoinsAndApiFailed: '未配置自定义币种且API获取失败',
     solutions: '解决方案：',
     setCustomCoinsInConfig: '在交易员配置中设置自定义币种列表',
     orConfigureCorrectApiUrl: '或者配置正确的数据源 API 地址',
-    orDisableCoinPoolOptions: '或者禁用"使用 AI500 数据源"和"使用 OI Top"选项',
+    orDisableAI500Options: '或者禁用"使用 AI500 数据源"和"使用 OI Top"选项',
     signalSourceNotConfigured: '信号源未配置',
     signalSourceWarningMessage:
       '您有交易员启用了"使用 AI500 数据源"或"使用 OI Top"，但尚未配置信号源 API 地址。这将导致候选币种数量为 0，交易员无法正常工作。',
@@ -2187,6 +2236,56 @@ export const translations = {
       privatekeyIncomplete: '请输入至少 {expected} 位字符',
       privatekeyInvalidFormat: '私钥格式无效（应为64位十六进制字符）',
       privatekeyObfuscationFailed: '剪贴板混淆失败',
+    },
+
+    // Position History
+    positionHistory: {
+      title: '历史仓位',
+      loading: '加载历史仓位...',
+      noHistory: '暂无历史仓位',
+      noHistoryDesc: '平仓后的仓位记录将显示在此处',
+      showingPositions: '显示 {count} / {total} 条记录',
+      totalPnL: '总盈亏',
+      // Stats
+      totalTrades: '总交易次数',
+      winLoss: '盈利: {win} / 亏损: {loss}',
+      winRate: '胜率',
+      profitFactor: '盈利因子',
+      profitFactorDesc: '总盈利 / 总亏损',
+      plRatio: '盈亏比',
+      plRatioDesc: '平均盈利 / 平均亏损',
+      sharpeRatio: '夏普比率',
+      sharpeRatioDesc: '风险调整收益',
+      maxDrawdown: '最大回撤',
+      avgWin: '平均盈利',
+      avgLoss: '平均亏损',
+      netPnL: '净盈亏',
+      netPnLDesc: '扣除手续费后',
+      fee: '手续费',
+      // Direction Stats
+      trades: '交易次数',
+      avgPnL: '平均盈亏',
+      // Symbol Performance
+      symbolPerformance: '品种表现',
+      // Filters
+      symbol: '交易对',
+      allSymbols: '全部交易对',
+      side: '方向',
+      all: '全部',
+      sort: '排序',
+      latestFirst: '最新优先',
+      oldestFirst: '最早优先',
+      highestPnL: '盈利最高',
+      lowestPnL: '亏损最多',
+      // Table Headers
+      entry: '开仓价',
+      exit: '平仓价',
+      qty: '数量',
+      value: '仓位价值',
+      lev: '杠杆',
+      pnl: '盈亏',
+      duration: '持仓时长',
+      closedAt: '平仓时间',
     },
 
     // Debate Arena Page
