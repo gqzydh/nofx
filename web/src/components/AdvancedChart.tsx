@@ -98,7 +98,6 @@ export function AdvancedChart({
   symbol = 'BTCUSDT',
   interval = '5m',
   traderID,
-  height = 550,
   exchange = 'binance', // 默认使用 binance
   onSymbolChange: _onSymbolChange, // Available for future use
 }: AdvancedChartProps) {
@@ -346,8 +345,8 @@ export function AdvancedChart({
     if (!chartContainerRef.current) return
 
     const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth || 800,
-      height: chartContainerRef.current.clientHeight || height,
+      width: chartContainerRef.current.clientWidth,
+      height: chartContainerRef.current.clientHeight, // Use container height
       layout: {
         background: { color: '#0B0E11' },
         textColor: '#B7BDC6',
@@ -493,7 +492,7 @@ export function AdvancedChart({
       resizeObserver.disconnect()
       chart.remove()
     }
-  }, []) // Chart is created once, ResizeObserver handles dimension changes
+  }, []) // Removed [height] dependency as we now autosize
 
 
   // 加载数据和指标
@@ -1012,7 +1011,7 @@ export function AdvancedChart({
       {/* 指标面板 - 专业化设计 */}
       {showIndicatorPanel && (
         <div
-          className="absolute top-16 right-4 z-10 rounded-lg shadow-2xl backdrop-blur-sm"
+          className="absolute z-10 rounded-lg shadow-2xl top-16 right-4 backdrop-blur-sm"
           style={{
             background: 'linear-gradient(135deg, #1A1E23 0%, #0F1215 100%)',
             border: '1px solid rgba(240, 185, 11, 0.2)',
@@ -1034,7 +1033,7 @@ export function AdvancedChart({
             </div>
             <button
               onClick={() => setShowIndicatorPanel(false)}
-              className="text-gray-400 hover:text-white transition-colors"
+              className="text-gray-400 transition-colors hover:text-white"
             >
               <span className="text-lg">×</span>
             </button>
@@ -1052,14 +1051,14 @@ export function AdvancedChart({
                     type="checkbox"
                     checked={indicator.enabled}
                     onChange={() => toggleIndicator(indicator.id)}
-                    className="w-4 h-4 rounded border-gray-600 text-yellow-500 focus:ring-2 focus:ring-yellow-500/50"
+                    className="w-4 h-4 text-yellow-500 border-gray-600 rounded focus:ring-2 focus:ring-yellow-500/50"
                   />
                 </div>
                 <div
-                  className="w-8 h-3 rounded-sm border border-white/10"
+                  className="w-8 h-3 border rounded-sm border-white/10"
                   style={{ backgroundColor: indicator.color }}
                 ></div>
-                <span className="text-sm text-gray-300 group-hover:text-white transition-colors flex-1">
+                <span className="flex-1 text-sm text-gray-300 transition-colors group-hover:text-white">
                   {indicator.name}
                 </span>
                 {indicator.enabled && (
@@ -1184,7 +1183,7 @@ export function AdvancedChart({
           style={{ background: 'rgba(11, 14, 17, 0.9)' }}
         >
           <div className="text-center">
-            <div className="text-2xl mb-2">⚠️</div>
+            <div className="mb-2 text-2xl">⚠️</div>
             <div style={{ color: '#F6465D' }}>{error}</div>
           </div>
         </div>
