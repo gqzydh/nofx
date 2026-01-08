@@ -98,6 +98,7 @@ export function AdvancedChart({
   symbol = 'BTCUSDT',
   interval = '5m',
   traderID,
+  height = 550,
   exchange = 'binance', // 默认使用 binance
   onSymbolChange: _onSymbolChange, // Available for future use
 }: AdvancedChartProps) {
@@ -345,8 +346,8 @@ export function AdvancedChart({
     if (!chartContainerRef.current) return
 
     const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      height: chartContainerRef.current.clientHeight, // Use container height
+      width: chartContainerRef.current.clientWidth || 800,
+      height: chartContainerRef.current.clientHeight || height,
       layout: {
         background: { color: '#0B0E11' },
         textColor: '#B7BDC6',
@@ -492,7 +493,7 @@ export function AdvancedChart({
       resizeObserver.disconnect()
       chart.remove()
     }
-  }, []) // Removed [height] dependency as we now autosize
+  }, []) // Chart is created once, ResizeObserver handles dimension changes
 
 
   // 加载数据和指标
